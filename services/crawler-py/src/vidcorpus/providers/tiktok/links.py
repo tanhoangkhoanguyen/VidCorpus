@@ -1,5 +1,5 @@
-from VideoCrawler.base import ChromeDriver
-from logger import get_logger
+from vidcorpus.core.browser import ChromeDriver
+from vidcorpus.core.log import get_logger
 
 import json, time, re
 from selenium.webdriver.common.by import By

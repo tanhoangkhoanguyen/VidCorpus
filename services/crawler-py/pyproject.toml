@@ -1,0 +1,33 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vidcorpus-crawler"
+version = "0.1.0"
+description = "Extracts video blobs, metadata and comment threads from online platforms"
+requires-python = ">=3.11,<3.13"
+
+dependencies = [
+    "requests==2.32.5",
+    "selenium==4.39.0",
+    "beautifulsoup4==4.14.3",
+    "pydantic==2.12.5",
+    "tqdm",
+    "yt-dlp",
+]
+
+[project.optional-dependencies]
+dev = ["ruff>=0.6"]
+
+[project.scripts]
+vidcorpus = "vidcorpus.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vidcorpus"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

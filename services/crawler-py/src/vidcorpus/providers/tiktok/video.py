@@ -1,6 +1,6 @@
-from VideoCrawler.base import ChromeDriver
-from VideoCrawler.schema import VideoSchema, SingleCommentSchema, CommentSchema
-from logger import get_logger
+from vidcorpus.core.browser import ChromeDriver
+from vidcorpus.schema import VideoSchema, SingleCommentSchema, CommentSchema
+from vidcorpus.core.log import get_logger
 
 import json, requests, time, re, os, warnings
 warnings.filterwarnings("ignore")
@@ -9,7 +9,6 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from concurrent.futures import ThreadPoolExecutor
 from bs4 import BeautifulSoup
-from datetime import datetime
 
 LOGGER = get_logger(__name__)
 TIKTOK_HEADERS = {

@@ -208,3 +208,8 @@ __marimo__/
 
 # Additional files
 **/tiktok_cookies.json
+# VidCorpus
+secrets/
+*_cookies.json
+.env
+data/

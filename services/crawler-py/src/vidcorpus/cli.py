@@ -1,8 +1,8 @@
-from VideoCrawler.providers.tiktok.tiktok_links_crawler import TikTokLinksCrawler
-from VideoCrawler.providers.tiktok.tiktok_video_crawler import TikTokVideoCrawler
-from VideoCrawler.providers.youtube.youtube_links_crawler import YouTubeLinksCrawler
-from VideoCrawler.providers.youtube.youtube_video_crawler import YoutubeVideoCrawler
-from logger import get_logger
+from vidcorpus.providers.tiktok.links import TikTokLinksCrawler
+from vidcorpus.providers.tiktok.video import TikTokVideoCrawler
+from vidcorpus.providers.youtube.links import YouTubeLinksCrawler
+from vidcorpus.providers.youtube.video import YoutubeVideoCrawler
+from vidcorpus.core.log import get_logger
 
 import threading, os, queue, warnings
 warnings.filterwarnings("ignore")
@@ -68,7 +68,7 @@ def validate_environment(workers: int):
         LOGGER.error("Please modify the workers")
         raise SystemExit()
 
-def run_demo(
+def main(
         producer_workers: int = 1,
         consumer_workers: int = 4
     ):
@@ -91,4 +91,4 @@ def run_demo(
     crawler.run()
 
 if __name__ == "__main__":
-    run_demo()
+    main()

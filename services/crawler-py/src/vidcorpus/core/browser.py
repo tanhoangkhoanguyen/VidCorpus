@@ -1,7 +1,5 @@
-from bs4 import element
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
-from collections import deque
 
 class ChromeDriver:
     def __init__(self, window_size = None):

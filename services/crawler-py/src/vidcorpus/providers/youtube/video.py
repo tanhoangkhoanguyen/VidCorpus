@@ -1,6 +1,6 @@
-from VideoCrawler.base import ChromeDriver
-from VideoCrawler.schema import VideoSchema, SingleCommentSchema, CommentSchema
-from logger import get_logger
+from vidcorpus.core.browser import ChromeDriver
+from vidcorpus.schema import VideoSchema, SingleCommentSchema, CommentSchema
+from vidcorpus.core.log import get_logger
 
 import os, requests, time, yt_dlp, json, warnings
 warnings.filterwarnings("ignore")

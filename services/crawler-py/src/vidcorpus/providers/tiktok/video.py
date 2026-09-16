@@ -1,8 +1,9 @@
 from vidcorpus.core.browser import ChromeDriver
+from vidcorpus.core.config import data_dir
 from vidcorpus.schema import VideoSchema, SingleCommentSchema, CommentSchema
 from vidcorpus.core.log import get_logger
 
-import json, requests, time, re, os, warnings
+import json, requests, time, re, warnings
 warnings.filterwarnings("ignore")
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -51,7 +52,7 @@ class TikTokVideoCrawler:
 
     def save_to_json(self):
         filename = f"tiktok_{self.metadata.id}.json"
-        file_path = os.path.join(self.storage_path, filename)
+        file_path = self.storage_path / filename
         try:
             with open(file_path, 'w', encoding = 'utf-8') as f:
                 json.dump(self.metadata.model_dump(), f, ensure_ascii = False, indent = 4)
@@ -178,7 +179,7 @@ class TikTokVideoCrawler:
             return
 
         filename = f"tiktok_{self.metadata.id}.mp4"
-        file_path = os.path.join(self.storage_path, filename)
+        file_path = self.storage_path / filename
         headers = TIKTOK_HEADERS
         headers["Range"] = "bytes=0-"
         
@@ -200,8 +201,8 @@ class TikTokVideoCrawler:
             return
 
         self.crawl_metadata()
-        self.storage_path = os.path.join("data/", self.metadata.id)
-        os.makedirs(self.storage_path, exist_ok = True)
+        self.storage_path = data_dir() / self.metadata.id
+        self.storage_path.mkdir(parents = True, exist_ok = True)
 
         with ThreadPoolExecutor(max_workers = 2) as executor:
             executor.submit(self.crawl_comments)

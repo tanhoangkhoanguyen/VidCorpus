@@ -1,4 +1,5 @@
 from vidcorpus.core.browser import ChromeDriver
+from vidcorpus.core.config import ConfigError, required_path
 from vidcorpus.core.log import get_logger
 
 import json, time, re
@@ -6,29 +7,35 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 LOGGER = get_logger(__name__)
+COOKIES_ENV_VAR = "TIKTOK_COOKIES_PATH"
 
 class TikTokLinksCrawler:
     def __init__(self):
+        # Resolve before launching Chrome so a missing config does not orphan a browser.
+        cookies_path = required_path(COOKIES_ENV_VAR)
         self.driver = ChromeDriver().get_driver()
         self.driver.get("https://www.tiktok.com")
-        self.__load_cookies()
+        self.__load_cookies(cookies_path)
 
-    def __load_cookies(self):
+    def __load_cookies(self, path):
         try:
-            with open("VideoCrawler/providers/tiktok/tiktok_cookies.json", "r", encoding = "utf-8") as f:
-                cookie_data = json.load(f)
-            for c in cookie_data["cookies"]:
-                self.driver.add_cookie({
-                    "name": c["name"],
-                    "value": c["value"],
-                    "domain": c.get("domain", None),
-                    "path": c.get("path", "/"),
-                    "secure": c.get("secure", False),
-                    "httpOnly": c.get("httpOnly", False),
-                })
-        except:
-            LOGGER.error("No tiktok_cookies.json found")
-            raise
+            cookie_data = json.loads(path.read_text(encoding = "utf-8"))
+            cookies = cookie_data["cookies"]
+        except json.JSONDecodeError as e:
+            raise ConfigError(f"{path} is not valid JSON: {e}") from e
+        except KeyError as e:
+            raise ConfigError(f"{path} has no top-level 'cookies' key") from e
+
+        for c in cookies:
+            self.driver.add_cookie({
+                "name": c["name"],
+                "value": c["value"],
+                "domain": c.get("domain", None),
+                "path": c.get("path", "/"),
+                "secure": c.get("secure", False),
+                "httpOnly": c.get("httpOnly", False),
+            })
+        LOGGER.info(f"Loaded {len(cookies)} cookies from {path}")
 
     def scroll_page(
             self, 

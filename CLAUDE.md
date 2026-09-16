@@ -19,7 +19,7 @@ pytest
 ruff check src tests
 ```
 
-Python pinned `>=3.11,<3.13`. Subpackages are PEP 420 namespace packages — no `__init__.py` except the top-level version marker.
+Python pinned `>=3.10,<3.13`. Subpackages are PEP 420 namespace packages — no `__init__.py` except the top-level version marker.
 
 ## Architecture
 

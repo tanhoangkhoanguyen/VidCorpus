@@ -1,12 +1,14 @@
-from vidcorpus.providers.tiktok.links import TikTokLinksCrawler
+from vidcorpus.providers.tiktok.links import COOKIES_ENV_VAR, TikTokLinksCrawler
 from vidcorpus.providers.tiktok.video import TikTokVideoCrawler
 from vidcorpus.providers.youtube.links import YouTubeLinksCrawler
 from vidcorpus.providers.youtube.video import YoutubeVideoCrawler
+from vidcorpus.core.config import ConfigError, required_path
 from vidcorpus.core.log import get_logger
 
-import threading, os, queue, warnings
+import sys, threading, os, queue, warnings
 warnings.filterwarnings("ignore")
 from concurrent.futures import ThreadPoolExecutor
+from dotenv import load_dotenv
 
 LOGGER = get_logger(__name__)
 
@@ -68,7 +70,7 @@ def validate_environment(workers: int):
         LOGGER.error("Please modify the workers")
         raise SystemExit()
 
-def main(
+def run(
         producer_workers: int = 1,
         consumer_workers: int = 4
     ):
@@ -89,6 +91,17 @@ def main(
         consumer_workers = consumer_workers
     )
     crawler.run()
+
+def main():
+    load_dotenv()
+    try:
+        # Fail here rather than inside the producer thread, where the exception
+        # would be swallowed and the consumers would block on an empty queue.
+        required_path(COOKIES_ENV_VAR)
+        run()
+    except ConfigError as e:
+        LOGGER.error(str(e))
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

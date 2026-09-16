@@ -1,40 +1,21 @@
-from vidcorpus.core.browser import ChromeDriver
-from vidcorpus.core.config import data_dir
-from vidcorpus.schema import VideoSchema, SingleCommentSchema, CommentSchema
-from vidcorpus.core.log import get_logger
+import time
 
-import requests, time, yt_dlp, json, warnings
-warnings.filterwarnings("ignore")
+import yt_dlp
 from selenium.webdriver.common.by import By
-from concurrent.futures import ThreadPoolExecutor
+
+from vidcorpus.core.browser import ChromeDriver
+from vidcorpus.core.crawler import BaseVideoCrawler
+from vidcorpus.core.log import get_logger
+from vidcorpus.schema import CommentSchema, SingleCommentSchema, VideoSchema
 
 LOGGER = get_logger(__name__)
 
-class YoutubeVideoCrawler:
+class YouTubeVideoCrawler(BaseVideoCrawler):
+    name = "youtube"
+    url_prefixes = ("https://www.youtube.com",)
+
     def __init__(self):
-        self.url = None
-        self.storage_path = None
-        self.metadata = VideoSchema()
-        self.driver = ChromeDriver(window_size="--window-size=300,1000").get_driver()
-
-    def check_link(self):
-        response_check = requests.get(self.url, allow_redirects=True)
-        final_url = response_check.url
-        if not final_url.startswith("https://www.youtube.com"):
-            LOGGER.warning("Wrong input link")
-            return False
-        self.url = final_url
-        return True
-
-    def save_to_json(self):
-        filename = f"youtube_{self.metadata.id}.json"
-        file_path = self.storage_path / filename
-        try:
-            with open(file_path, 'w', encoding = 'utf-8') as f:
-                json.dump(self.metadata.model_dump(), f, ensure_ascii = False, indent = 4)
-            LOGGER.info(f"Saved data for video {self.metadata.id}")
-        except Exception as e:
-            LOGGER.error(f"Unable to save data for video {self.metadata.id}:\n\t{str(e)}")
+        super().__init__(ChromeDriver(window_size = "300,1000").get_driver())
 
     def crawl_metadata(self):
         ydl_opts = {
@@ -57,12 +38,12 @@ class YoutubeVideoCrawler:
 
     def crawl_comments(
             self, 
-            scrolling: int = 1
+            scroll_rounds: int = 1
         ):
         self.driver.get(self.url)
         time.sleep(2)
 
-        for _ in range(scrolling):
+        for _ in range(scroll_rounds):
             self.driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
             time.sleep(2)
 
@@ -121,7 +102,7 @@ class YoutubeVideoCrawler:
 
     def download_video(self):
         try:
-            filename_template = f"youtube_{self.metadata.id}.%(ext)s"
+            filename_template = f"{self.name}_{self.metadata.id}.%(ext)s"
             file_path = self.storage_path / filename_template
             ydl_opts = {
                 "outtmpl": str(file_path),
@@ -134,24 +115,3 @@ class YoutubeVideoCrawler:
             LOGGER.info(f"Saved video {self.metadata.id}")
         except Exception as e:
             LOGGER.error(f"Unable to download video {self.metadata.id}\n\t{str(e)}")
-
-    def quit_driver(self):
-        self.driver.quit()
-
-    def run(
-            self, 
-            url: str
-        ):
-        self.url = url
-        if not self.check_link():
-            return
-
-        self.crawl_metadata()
-        self.storage_path = data_dir() / self.metadata.id
-        self.storage_path.mkdir(parents = True, exist_ok = True)
-
-        with ThreadPoolExecutor(max_workers = 2) as executor:
-            executor.submit(self.crawl_comments)
-            executor.submit(self.download_video)
-
-        self.save_to_json()

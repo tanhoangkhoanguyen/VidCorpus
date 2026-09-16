@@ -1,26 +1,39 @@
+import json
+import re
+import time
+from collections.abc import Iterator
+
+from selenium.webdriver.common.by import By
+
 from vidcorpus.core.browser import ChromeDriver
 from vidcorpus.core.config import ConfigError, required_path
+from vidcorpus.core.crawler import BaseLinksCrawler
 from vidcorpus.core.log import get_logger
-
-import json, time, re
-from selenium.webdriver.common.by import By
-from selenium.webdriver.common.keys import Keys
 
 LOGGER = get_logger(__name__)
 COOKIES_ENV_VAR = "TIKTOK_COOKIES_PATH"
+VIDEO_URL = re.compile(r"https://www\.tiktok\.com/@[A-Za-z0-9_.-]+/video/[0-9]+")
+#: TikTok loads tiles lazily; give each scroll this long to fetch the next batch.
+FEED_SETTLE_SECONDS = 2
 
-class TikTokLinksCrawler:
+
+class TikTokLinksCrawler(BaseLinksCrawler):
+    name = "tiktok"
+
+    @classmethod
+    def validate_config(cls) -> None:
+        required_path(COOKIES_ENV_VAR)
+
     def __init__(self):
         # Resolve before launching Chrome so a missing config does not orphan a browser.
         cookies_path = required_path(COOKIES_ENV_VAR)
-        self.driver = ChromeDriver().get_driver()
+        super().__init__(ChromeDriver().get_driver())
         self.driver.get("https://www.tiktok.com")
         self.__load_cookies(cookies_path)
 
     def __load_cookies(self, path):
         try:
-            cookie_data = json.loads(path.read_text(encoding = "utf-8"))
-            cookies = cookie_data["cookies"]
+            cookies = json.loads(path.read_text(encoding = "utf-8"))["cookies"]
         except json.JSONDecodeError as e:
             raise ConfigError(f"{path} is not valid JSON: {e}") from e
         except KeyError as e:
@@ -37,64 +50,25 @@ class TikTokLinksCrawler:
             })
         LOGGER.info(f"Loaded {len(cookies)} cookies from {path}")
 
-    def scroll_page(
-            self, 
-            scrolls: int = 1
-        ):
-        body = self.driver.find_element(By.TAG_NAME, "body")
-        for _ in range(scrolls):
-            body.send_keys(Keys.END)
-            time.sleep(2)
+    def search_url(self, keyword: str) -> str:
+        return f"https://www.tiktok.com/search?q={keyword.replace(' ', '%20')}"
 
-    def extract_video_links(self):
-        pattern = re.compile(
-            r"https://www\.tiktok\.com/@[A-Za-z0-9_.-]+/video/[0-9]+"
-        )
-        links = self.driver.find_elements(By.XPATH, "//a[@href]")
-        for link in links:
-            href = link.get_attribute("href")
-            if href and pattern.search(href):
-                yield href
+    def channel_url(self, channel: str) -> str:
+        return f"https://www.tiktok.com/@{channel}"
 
-    def crawl_by_keyword(
-            self, 
-            keyword: str, 
-            scrolling: int = 1
-        ):
-        encoded = keyword.replace(" ", "%20")
-        url = f"https://www.tiktok.com/search?q={encoded}"
-        self.driver.get(url)
-        time.sleep(2)
-
-        for _ in range(scrolling):
+    def load_more_results(self, rounds: int) -> None:
+        # TikTok's feed only loads more when the last tile enters the viewport,
+        # so END-key scrolling does not page it.
+        time.sleep(FEED_SETTLE_SECONDS)
+        for _ in range(rounds):
             self.driver.execute_script("""
                 const items = document.querySelectorAll('a[href*="/video/"]');
                 if (items.length) items[items.length - 1].scrollIntoView();
             """)
-            time.sleep(2)
+            time.sleep(FEED_SETTLE_SECONDS)
 
-        yield from self.extract_video_links()
-
-    def crawl_by_channel(
-            self, 
-            channel: str, 
-            scrolling: int = 1
-        ):
-        url = f"https://www.tiktok.com/@{channel}"
-        self.driver.get(url)
-        time.sleep(2)
-        self.scroll_page(scrolling)
-        yield from self.extract_video_links()
-
-    def quit_driver(self):
-        self.driver.quit()
-
-    def run(
-            self,
-            keyword: str = None, 
-            channel: str = None
-        ):
-        if keyword:
-            yield from self.crawl_by_keyword(keyword)
-        if channel:
-            yield from self.crawl_by_channel(channel)
+    def extract_video_links(self) -> Iterator[str]:
+        for link in self.driver.find_elements(By.XPATH, "//a[@href]"):
+            href = link.get_attribute("href")
+            if href and VIDEO_URL.search(href):
+                yield href

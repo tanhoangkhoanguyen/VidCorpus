@@ -1,6 +1,12 @@
 import time
 
 import yt_dlp
+from pydantic import ValidationError
+from selenium.common.exceptions import (
+    NoSuchElementException,
+    StaleElementReferenceException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
 
 from vidcorpus.core.browser import ChromeDriver
@@ -24,21 +30,28 @@ class YouTubeVideoCrawler(BaseVideoCrawler):
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(self.url, download=False)
-        self.metadata = VideoSchema(
-            id          = info.get("id"),
-            title       = info.get("title"),
-            channel     = info.get("channel"),
-            channel_id  = info.get("channel_id"),
-            subscribers = info.get("channel_follower_count"),
-            description = info.get("description"),
-            date        = info.get("upload_date"),
-            views       = info.get("view_count"),
-            likes       = info.get("like_count")
-        )
+        # yt-dlp returns None for anything the video hides (like counts, subscriber
+        # counts on some channels); the schema defaults cover those.
+        self.metadata = VideoSchema(**{
+            field: value
+            for field, value in {
+                "id":          info.get("id"),
+                "title":       info.get("title"),
+                "channel":     info.get("channel"),
+                "channel_id":  info.get("channel_id"),
+                "subscribers": info.get("channel_follower_count"),
+                "description": info.get("description"),
+                "date":        info.get("upload_date"),
+                "views":       info.get("view_count"),
+                "likes":       info.get("like_count"),
+            }.items()
+            if value is not None
+        })
 
     def crawl_comments(
             self, 
-            scroll_rounds: int = 1
+            scroll_rounds: int = 1,
+            reply_expansions: int = 3
         ):
         self.driver.get(self.url)
         time.sleep(2)
@@ -47,24 +60,37 @@ class YouTubeVideoCrawler(BaseVideoCrawler):
             self.driver.execute_script("window.scrollTo(0, document.documentElement.scrollHeight);")
             time.sleep(2)
 
-        while True:
+        # Bounded: clicking does not always clear the aria-label, so an unbounded
+        # loop could spin forever on a video whose replies fail to expand.
+        for _ in range(reply_expansions):
             try:
                 buttons = self.driver.find_elements(
-                    By.XPATH, 
+                    By.XPATH,
                     '//ytd-button-renderer//a[contains(@aria-label,"reply")]'
                 )
-                if not buttons:
-                    break
-                for b in buttons:
+            except WebDriverException as e:
+                LOGGER.warning(f"video {self.metadata.id}: cannot list reply buttons: {e.msg}")
+                break
+            if not buttons:
+                break
+            for b in buttons:
+                try:
                     self.driver.execute_script("arguments[0].click();", b)
                     time.sleep(2)
-            except:
-                break
+                except (WebDriverException, StaleElementReferenceException) as e:
+                    LOGGER.debug(
+                        f"video {self.metadata.id}: reply button skipped: {type(e).__name__}"
+                    )
 
-        threads = self.driver.find_elements(
-            By.CSS_SELECTOR, 
-            "ytd-comment-thread-renderer"
-        )
+        try:
+            threads = self.driver.find_elements(
+                By.CSS_SELECTOR,
+                "ytd-comment-thread-renderer"
+            )
+        except WebDriverException as e:
+            LOGGER.warning(f"video {self.metadata.id}: cannot list comments: {e.msg}")
+            return
+
         for e in threads:
             try:
                 author = e.find_element(
@@ -94,11 +120,16 @@ class YouTubeVideoCrawler(BaseVideoCrawler):
                                 author = reply_author, 
                                 comment = reply_text
                             ))
-                    except:
+                    except (NoSuchElementException, StaleElementReferenceException):
+                        # A reply row with no resolvable author is dropped, not fatal.
                         continue
                 self.metadata.comments.append(comment_data)
-            except:
-                continue
+            except (NoSuchElementException, StaleElementReferenceException,
+                    ValidationError) as e:
+                LOGGER.warning(
+                    f"video {self.metadata.id}: skipped a comment, "
+                    f"selectors likely stale ({type(e).__name__})"
+                )
 
     def download_video(self):
         try:
@@ -113,5 +144,5 @@ class YouTubeVideoCrawler(BaseVideoCrawler):
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 ydl.download([self.url])
             LOGGER.info(f"Saved video {self.metadata.id}")
-        except Exception as e:
-            LOGGER.error(f"Unable to download video {self.metadata.id}\n\t{str(e)}")
+        except (yt_dlp.utils.DownloadError, OSError) as e:
+            LOGGER.error(f"video {self.metadata.id}: download failed ({type(e).__name__}: {e})")

@@ -1,24 +1,39 @@
+"""One shape for every provider.
+
+Fields a platform does not publish stay None: TikTok has no subscriber count,
+and None says "unknown" where 0 would claim the channel has no followers.
+"""
+
 from pydantic import BaseModel, Field
-from typing import Optional, List
+
 
 class SingleCommentSchema(BaseModel):
-    author:  Optional[str] = ""
-    comment: Optional[str] = ""
+    author: str = ""
+    comment: str = ""
+
 
 class CommentSchema(BaseModel):
-    author:  Optional[str] = ""
-    comment: Optional[str] = ""
-    replies: Optional[List[SingleCommentSchema]] = Field(default_factory = list)
+    author: str = ""
+    comment: str = ""
+    replies: list[SingleCommentSchema] = Field(default_factory = list)
+
 
 class VideoSchema(BaseModel):
-    id:          Optional[str] = ""
-    title:       Optional[str] = ""
-    channel:     Optional[str] = ""
-    channel_id:  Optional[str] = ""
-    subscribers: Optional[int] = 0
-    description: Optional[str] = ""
-    date:        Optional[str] = ""
-    views:       Optional[int] = 0
-    likes:       Optional[int] = 0
-    comments:    Optional[List[CommentSchema]] = Field(default_factory = list)
-    hashtag:     Optional[List[str]] = Field(default_factory = list)
+    #: Always present - every provider identifies a video and its channel.
+    id: str = ""
+    channel: str = ""
+    description: str = ""
+    date: str = ""
+    comments: list[CommentSchema] = Field(default_factory = list)
+
+    #: YouTube only. TikTok videos have no title and no channel id.
+    title: str | None = None
+    channel_id: str | None = None
+    subscribers: int | None = None
+
+    #: TikTok only. YouTube tags are not scraped.
+    hashtag: list[str] | None = None
+
+    #: Both platforms, but either can hide these on a given video.
+    views: int | None = None
+    likes: int | None = None

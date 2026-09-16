@@ -1,9 +1,16 @@
 import json
 import re
 import time
+from datetime import datetime, timezone
 
 import requests
 from bs4 import BeautifulSoup
+from pydantic import ValidationError
+from selenium.common.exceptions import (
+    StaleElementReferenceException,
+    TimeoutException,
+    WebDriverException,
+)
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
@@ -14,10 +21,17 @@ from vidcorpus.core.log import get_logger
 from vidcorpus.schema import CommentSchema, SingleCommentSchema
 
 LOGGER = get_logger(__name__)
+
+
+def _optional_int(value) -> int | None:
+    """TikTok omits a count rather than sending 0 when a video hides it."""
+    return None if value is None else int(value)
+
+
 TIKTOK_HEADERS = {
     "accept": "*/*",
     "accept-language": "vi,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0",
+    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0",  # noqa: E501 - a user-agent must be one unbroken line
     "Referer": "https://www.tiktok.com/",
     "Accept-Encoding": "identity;q=1, *;q=0"
 }
@@ -49,21 +63,36 @@ class TikTokVideoCrawler(BaseVideoCrawler):
         self.metadata.id = re.search(r'/video/(\d+)', self.url).group(1)
         soup = BeautifulSoup(response.text, "html.parser")
         script_tag = soup.find("script", id = "__UNIVERSAL_DATA_FOR_REHYDRATION__")
-        if script_tag:
-            try:
-                raw_json = script_tag.string
-                data = json.loads(raw_json)
-                item_struct = data['__DEFAULT_SCOPE__']['webapp.video-detail']['itemInfo']['itemStruct']
-                text_tags = item_struct.get('textExtra', [])
-                self.metadata.channel      = re.search(r'tiktok\.com/@([^/]+)/video', self.url).group(1)
-                self.metadata.description  = re.sub(r'#\w+', '', item_struct.get('desc', '')).strip()
-                self.metadata.date         = item_struct['createTime']
-                self.metadata.likes        = int(item_struct.get('stats', {}).get('diggCount', ''))
-                self.metadata.views        = int(item_struct.get('stats', {}).get('playCount', ''))
-                self.metadata.hashtag      = ['#'+tag.get('hashtagName', '') for tag in text_tags if tag.get('hashtagName')]
-                self.video_download_url = item_struct.get('video', {}).get('playAddr', '')
-            except Exception as e:
-                LOGGER.error(f"Unable to extract info from video {self.metadata.id}:\n\t{str(e)}")
+        if not script_tag:
+            LOGGER.error(
+                f"video {self.metadata.id}: no rehydration blob in the page - "
+                "TikTok changed its markup, or this was a block page"
+            )
+            return
+
+        try:
+            data = json.loads(script_tag.string)
+            item_struct = data['__DEFAULT_SCOPE__']['webapp.video-detail']['itemInfo']['itemStruct']
+            text_tags = item_struct.get('textExtra', [])
+            self.metadata.channel      = re.search(r'tiktok\.com/@([^/]+)/video', self.url).group(1)
+            self.metadata.description  = re.sub(r'#\w+', '', item_struct.get('desc', '')).strip()
+            # createTime is a Unix timestamp; the schema stores dates as strings.
+            self.metadata.date         = datetime.fromtimestamp(
+                int(item_struct['createTime']), tz = timezone.utc
+            ).isoformat()
+            # Absent counts stay None; 0 would claim the video has no likes.
+            stats = item_struct.get('stats', {})
+            self.metadata.likes        = _optional_int(stats.get('diggCount'))
+            self.metadata.views        = _optional_int(stats.get('playCount'))
+            self.metadata.hashtag      = [
+                '#' + tag['hashtagName'] for tag in text_tags if tag.get('hashtagName')
+            ]
+            self.video_download_url = item_struct.get('video', {}).get('playAddr', '')
+        except (json.JSONDecodeError, KeyError, AttributeError, TypeError, ValueError) as e:
+            LOGGER.error(
+                f"video {self.metadata.id}: cannot read the rehydration blob "
+                f"({type(e).__name__}: {e})"
+            )
     
     def crawl_comments(
             self,
@@ -73,35 +102,51 @@ class TikTokVideoCrawler(BaseVideoCrawler):
         self.driver.get(self.url)
         time.sleep(2)
 
-        comment_btn = WebDriverWait(self.driver, 10).until(
-            EC.element_to_be_clickable((By.CSS_SELECTOR, "[data-e2e='comment-icon']"))
-        )
-        comment_btn.click()
+        try:
+            comment_btn = WebDriverWait(self.driver, 10).until(
+                EC.element_to_be_clickable((By.CSS_SELECTOR, "[data-e2e='comment-icon']"))
+            )
+            comment_btn.click()
+        except TimeoutException:
+            LOGGER.warning(
+                f"video {self.metadata.id}: comment button never became clickable - "
+                "comments stay empty"
+            )
+            return
 
-        for _ in range (scroll_rounds):
+        for _ in range(scroll_rounds):
             self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
             time.sleep(2)
-        
-        for _ in range (reply_expansions):
+
+        for _ in range(reply_expansions):
             try:
                 view_buttons = self.driver.find_elements(
                     By.XPATH,
                     "//div[contains(@class,'DivViewRepliesContainer')]"
                 )
-                for btn in view_buttons:
-                    try:
-                        text = btn.text.strip()
-                        if "View" not in text:
-                            continue
-                        self.driver.execute_script("arguments[0].scrollIntoView(true);", btn)
-                        btn.click()
-                        time.sleep(0.2)
-                    except:
-                        continue
-            except:
-                continue
+            except WebDriverException as e:
+                LOGGER.warning(f"video {self.metadata.id}: cannot list reply buttons: {e.msg}")
+                break
 
-        raw_html = self.driver.page_source
+            for btn in view_buttons:
+                try:
+                    if "View" not in btn.text.strip():
+                        continue
+                    self.driver.execute_script("arguments[0].scrollIntoView(true);", btn)
+                    btn.click()
+                    time.sleep(0.2)
+                except (WebDriverException, StaleElementReferenceException) as e:
+                    # The feed re-renders as replies expand, so buttons go stale mid-loop.
+                    LOGGER.debug(
+                        f"video {self.metadata.id}: reply button skipped: {type(e).__name__}"
+                    )
+
+        try:
+            raw_html = self.driver.page_source
+        except WebDriverException as e:
+            LOGGER.warning(f"video {self.metadata.id}: cannot read the page: {e.msg}")
+            return
+
         soup = BeautifulSoup(raw_html, "html.parser")
         comment_wrappers = soup.select('div[class*="DivCommentObjectWrapper"]')
         for wrapper in comment_wrappers:
@@ -149,9 +194,11 @@ class TikTokVideoCrawler(BaseVideoCrawler):
                             ))
 
                 self.metadata.comments.append(comment_data)
-            except Exception as e:
-                print(f"Error parsing comment: {e}")
-                continue
+            except (AttributeError, TypeError, ValidationError) as e:
+                LOGGER.warning(
+                    f"video {self.metadata.id}: skipped a comment, "
+                    f"selectors likely stale ({type(e).__name__}: {e})"
+                )
 
     def download_video(self):
         if not self.video_download_url:
@@ -160,14 +207,16 @@ class TikTokVideoCrawler(BaseVideoCrawler):
 
         filename = f"{self.name}_{self.metadata.id}.mp4"
         file_path = self.storage_path / filename
-        headers = TIKTOK_HEADERS
-        headers["Range"] = "bytes=0-"
+        # Copy: assigning into TIKTOK_HEADERS would leak Range into every later request.
+        headers = {**TIKTOK_HEADERS, "Range": "bytes=0-"}
         
         try:
-            resp = self.session.get(self.video_download_url, headers = headers, cookies = TIKTOK_COOKIES)
+            resp = self.session.get(
+                self.video_download_url, headers = headers, cookies = TIKTOK_COOKIES
+            )
             self.__debug_session(resp)
             with open(file_path, 'wb') as f:
                 f.write(resp.content)
             LOGGER.info(f"Saved video {self.metadata.id}")
-        except Exception as e:
-            LOGGER.error(f"Undefined error for video {self.metadata.id}:\n\t{str(e)}")
+        except (requests.RequestException, OSError) as e:
+            LOGGER.error(f"video {self.metadata.id}: download failed ({type(e).__name__}: {e})")

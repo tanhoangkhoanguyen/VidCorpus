@@ -110,7 +110,10 @@ def main() -> None:
     # One producer thread plus the consumers.
     validate_environment(1 + args.workers)
     try:
+        # Validates selectors and credentials on the main thread, before any
+        # browser or worker starts.
         registry.get_links_crawler(args.platform).validate_config()
+        registry.get_video_crawler(args.platform).validate_config()
         CrawlerService(
             platform = args.platform,
             keywords = args.keyword,

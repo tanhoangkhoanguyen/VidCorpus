@@ -1,0 +1,44 @@
+# YouTube DOM selectors. Bump `version` and `last_verified` whenever these change.
+#
+# YouTube's Polymer components (ytd-*) and their element ids have been stable for
+# years, so fallbacks here are thinner than TikTok's.
+version: 1
+last_verified: 2026-09-03
+
+selectors:
+  # --- links crawler ---
+  body:
+    how: tag
+    query: 'body'
+
+  video_link:
+    how: xpath
+    query: '//a[@id="video-title"]'
+    fallbacks:
+      - '//a[@href and contains(@href,"watch")]'
+
+  # --- comment thread ---
+  reply_button:
+    how: xpath
+    query: '//ytd-button-renderer//a[contains(@aria-label,"reply")]'
+    fallbacks:
+      - '//ytd-button-renderer//button[contains(@aria-label,"repl")]'
+
+  comment_thread:
+    query: 'ytd-comment-thread-renderer'
+
+  comment_author:
+    query: '#author-text'
+
+  comment_text:
+    query: '#content-text'
+
+  reply_text:
+    query: 'ytd-comment-renderer #content-text'
+    fallbacks:
+      - 'ytd-comment-view-model #content-text'
+
+  # Walks up from a reply's text node to that reply's author link.
+  reply_author_from_text:
+    how: xpath
+    query: "../../..//a[@id='author-text']"

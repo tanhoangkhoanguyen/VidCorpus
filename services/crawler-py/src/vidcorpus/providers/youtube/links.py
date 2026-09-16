@@ -1,7 +1,6 @@
 import time
 from collections.abc import Iterator
 
-from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 
 from vidcorpus.core.browser import ChromeDriver
@@ -15,6 +14,7 @@ FEED_SETTLE_SECONDS = 2
 
 class YouTubeLinksCrawler(BaseLinksCrawler):
     name = "youtube"
+    required_selectors = {"body", "video_link"}
 
     def __init__(self):
         super().__init__(ChromeDriver().get_driver())
@@ -27,13 +27,16 @@ class YouTubeLinksCrawler(BaseLinksCrawler):
 
     def load_more_results(self, rounds: int) -> None:
         time.sleep(FEED_SETTLE_SECONDS)
-        body = self.driver.find_element(By.TAG_NAME, "body")
+        body = self.selectors.find_one(self.driver, "body")
+        if body is None:
+            LOGGER.warning("no page body to scroll")
+            return
         for _ in range(rounds):
             body.send_keys(Keys.END)
             time.sleep(FEED_SETTLE_SECONDS)
 
     def extract_video_links(self) -> Iterator[str]:
-        for video in self.driver.find_elements(By.XPATH, '//a[@id="video-title"]'):
+        for video in self.selectors.find_all(self.driver, "video_link"):
             href = video.get_attribute("href")
             if href and "watch" in href:
                 yield href

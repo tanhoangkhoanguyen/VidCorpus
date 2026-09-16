@@ -9,6 +9,7 @@ import requests
 
 from vidcorpus.core.config import data_dir
 from vidcorpus.core.log import get_logger
+from vidcorpus.core.selectors import load as load_selectors
 from vidcorpus.schema import VideoSchema
 
 LOGGER = get_logger(__name__)
@@ -18,18 +19,22 @@ class BaseLinksCrawler(ABC):
     """Streams video URLs from a platform's search and channel pages."""
 
     name: str
+    #: Selector keys this crawler reads, checked against the YAML at startup.
+    required_selectors: set[str] = set()
 
     def __init__(self, driver):
         self.driver = driver
+        self.selectors = load_selectors(self.name)
 
-    # B027: intentionally a no-op default - most providers need no configuration.
-    @classmethod  # noqa: B027
+    @classmethod
     def validate_config(cls) -> None:
-        """Raise ConfigError if this provider is not configured.
+        """Raise ConfigError if this provider is not ready to run.
 
         Called on the main thread before any crawler is built, so a missing
         setting surfaces as a clean exit instead of dying inside a worker.
+        Subclasses that need credentials extend this.
         """
+        load_selectors(cls.name).require(cls.required_selectors)
 
     @abstractmethod
     def search_url(self, keyword: str) -> str:
@@ -80,12 +85,20 @@ class BaseVideoCrawler(ABC):
 
     name: str
     url_prefixes: tuple[str, ...]
+    #: Selector keys this crawler reads, checked against the YAML at startup.
+    required_selectors: set[str] = set()
 
     def __init__(self, driver):
         self.driver = driver
+        self.selectors = load_selectors(self.name)
         self.url = None
         self.storage_path = None
         self.metadata = VideoSchema()
+
+    @classmethod
+    def validate_config(cls) -> None:
+        """Raise ConfigError if this provider is not ready to run."""
+        load_selectors(cls.name).require(cls.required_selectors)
 
     @abstractmethod
     def crawl_metadata(self) -> None:

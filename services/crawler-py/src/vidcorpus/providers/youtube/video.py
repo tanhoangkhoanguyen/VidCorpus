@@ -19,6 +19,10 @@ LOGGER = get_logger(__name__)
 class YouTubeVideoCrawler(BaseVideoCrawler):
     name = "youtube"
     url_prefixes = ("https://www.youtube.com",)
+    required_selectors = {
+        "reply_button", "comment_thread", "comment_author", "comment_text",
+        "reply_text", "reply_author_from_text",
+    }
 
     def __init__(self):
         super().__init__(ChromeDriver(window_size = "300,1000").get_driver())
@@ -64,10 +68,7 @@ class YouTubeVideoCrawler(BaseVideoCrawler):
         # loop could spin forever on a video whose replies fail to expand.
         for _ in range(reply_expansions):
             try:
-                buttons = self.driver.find_elements(
-                    By.XPATH,
-                    '//ytd-button-renderer//a[contains(@aria-label,"reply")]'
-                )
+                buttons = self.selectors.find_all(self.driver, "reply_button")
             except WebDriverException as e:
                 LOGGER.warning(f"video {self.metadata.id}: cannot list reply buttons: {e.msg}")
                 break
@@ -82,24 +83,18 @@ class YouTubeVideoCrawler(BaseVideoCrawler):
                         f"video {self.metadata.id}: reply button skipped: {type(e).__name__}"
                     )
 
-        try:
-            threads = self.driver.find_elements(
-                By.CSS_SELECTOR,
-                "ytd-comment-thread-renderer"
-            )
-        except WebDriverException as e:
-            LOGGER.warning(f"video {self.metadata.id}: cannot list comments: {e.msg}")
+        threads = self.selectors.find_all(self.driver, "comment_thread")
+        if not threads:
+            LOGGER.warning(f"video {self.metadata.id}: no comment threads found")
             return
 
         for e in threads:
             try:
                 author = e.find_element(
-                    By.CSS_SELECTOR, 
-                    "#author-text"
+                    By.CSS_SELECTOR, self.selectors.query("comment_author")
                 ).text
                 text = e.find_element(
-                    By.CSS_SELECTOR, 
-                    "#content-text"
+                    By.CSS_SELECTOR, self.selectors.query("comment_text")
                 ).text
                 comment_data = CommentSchema(
                     author = author, 
@@ -107,12 +102,11 @@ class YouTubeVideoCrawler(BaseVideoCrawler):
                     replies = []
                 )
 
-                replies = e.find_elements(By.CSS_SELECTOR, "ytd-comment-renderer #content-text")
+                replies = self.selectors.find_all(e, "reply_text")
                 for r in replies[1:]:
                     try:
                         reply_author = r.find_element(
-                            By.XPATH, 
-                            "../../..//a[@id='author-text']"
+                            By.XPATH, self.selectors.query("reply_author_from_text")
                         ).text
                         reply_text = r.text
                         comment_data.replies.append(

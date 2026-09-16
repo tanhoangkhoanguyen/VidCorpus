@@ -3,8 +3,6 @@ import re
 import time
 from collections.abc import Iterator
 
-from selenium.webdriver.common.by import By
-
 from vidcorpus.core.browser import ChromeDriver
 from vidcorpus.core.config import ConfigError, required_path
 from vidcorpus.core.crawler import BaseLinksCrawler
@@ -19,9 +17,11 @@ FEED_SETTLE_SECONDS = 2
 
 class TikTokLinksCrawler(BaseLinksCrawler):
     name = "tiktok"
+    required_selectors = {"any_link"}
 
     @classmethod
     def validate_config(cls) -> None:
+        super().validate_config()
         required_path(COOKIES_ENV_VAR)
 
     def __init__(self):
@@ -68,7 +68,7 @@ class TikTokLinksCrawler(BaseLinksCrawler):
             time.sleep(FEED_SETTLE_SECONDS)
 
     def extract_video_links(self) -> Iterator[str]:
-        for link in self.driver.find_elements(By.XPATH, "//a[@href]"):
+        for link in self.selectors.find_all(self.driver, "any_link"):
             href = link.get_attribute("href")
             if href and VIDEO_URL.search(href):
                 yield href

@@ -43,6 +43,11 @@ TIKTOK_COOKIES = {
 class TikTokVideoCrawler(BaseVideoCrawler):
     name = "tiktok"
     url_prefixes = ("https://vt.tiktok.com", "https://www.tiktok.com")
+    required_selectors = {
+        "rehydration_blob", "comment_button", "view_replies_button",
+        "comment_wrapper", "comment_item", "comment_author", "comment_text",
+        "reply_container", "reply_author", "reply_text",
+    }
 
     def __init__(self):
         super().__init__(ChromeDriver(window_size = "300,1000").get_driver())
@@ -62,7 +67,7 @@ class TikTokVideoCrawler(BaseVideoCrawler):
         )
         self.metadata.id = re.search(r'/video/(\d+)', self.url).group(1)
         soup = BeautifulSoup(response.text, "html.parser")
-        script_tag = soup.find("script", id = "__UNIVERSAL_DATA_FOR_REHYDRATION__")
+        script_tag = self.selectors.select_one(soup, "rehydration_blob")
         if not script_tag:
             LOGGER.error(
                 f"video {self.metadata.id}: no rehydration blob in the page - "
@@ -104,7 +109,9 @@ class TikTokVideoCrawler(BaseVideoCrawler):
 
         try:
             comment_btn = WebDriverWait(self.driver, 10).until(
-                EC.element_to_be_clickable((By.CSS_SELECTOR, "[data-e2e='comment-icon']"))
+                EC.element_to_be_clickable(
+                    (By.CSS_SELECTOR, self.selectors.query("comment_button"))
+                )
             )
             comment_btn.click()
         except TimeoutException:
@@ -120,10 +127,7 @@ class TikTokVideoCrawler(BaseVideoCrawler):
 
         for _ in range(reply_expansions):
             try:
-                view_buttons = self.driver.find_elements(
-                    By.XPATH,
-                    "//div[contains(@class,'DivViewRepliesContainer')]"
-                )
+                view_buttons = self.selectors.find_all(self.driver, "view_replies_button")
             except WebDriverException as e:
                 LOGGER.warning(f"video {self.metadata.id}: cannot list reply buttons: {e.msg}")
                 break
@@ -148,17 +152,17 @@ class TikTokVideoCrawler(BaseVideoCrawler):
             return
 
         soup = BeautifulSoup(raw_html, "html.parser")
-        comment_wrappers = soup.select('div[class*="DivCommentObjectWrapper"]')
+        comment_wrappers = self.selectors.select(soup, "comment_wrapper")
         for wrapper in comment_wrappers:
             try:
-                level1 = wrapper.select_one('div[class*="DivCommentItemWrapper"]')
+                level1 = self.selectors.select_one(wrapper, "comment_item")
                 if not level1:
                     continue
 
-                author_tag_1 = level1.select_one('div[data-e2e="comment-username-1"] a p')
+                author_tag_1 = self.selectors.select_one(level1, "comment_author")
                 author_1 = author_tag_1.get_text(strip=True) if author_tag_1 else ""
 
-                comment_tag_1 = level1.select_one('span[data-e2e="comment-level-1"]')
+                comment_tag_1 = self.selectors.select_one(level1, "comment_text")
                 comment_text_1 = comment_tag_1.get_text(strip=True) if comment_tag_1 else ""
 
                 comment_data = CommentSchema(
@@ -167,14 +171,14 @@ class TikTokVideoCrawler(BaseVideoCrawler):
                     replies=[]
                 )
 
-                reply_container = wrapper.select_one('div[class*="DivReplyContainer"]')
+                reply_container = self.selectors.select_one(wrapper, "reply_container")
                 if reply_container:
-                    reply_wrappers = reply_container.select('div[class*="DivCommentItemWrapper"]')
+                    reply_wrappers = self.selectors.select(reply_container, "comment_item")
                     for reply in reply_wrappers:
-                        author_tag_2 = reply.select_one('div[data-e2e="comment-username-2"] a p')
+                        author_tag_2 = self.selectors.select_one(reply, "reply_author")
                         author_2 = author_tag_2.get_text(strip=True) if author_tag_2 else ""
 
-                        comment_tag_2 = reply.select_one('span[data-e2e="comment-level-2"]')
+                        comment_tag_2 = self.selectors.select_one(reply, "reply_text")
                         if comment_tag_2:
                             direct_spans = comment_tag_2.find_all('span', recursive=False)
                             if direct_spans:

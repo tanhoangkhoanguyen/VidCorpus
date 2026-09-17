@@ -9,6 +9,7 @@ description = "Extracts video blobs, metadata and comment threads from online pl
 requires-python = ">=3.10,<3.13"
 
 dependencies = [
+    "asyncpg>=0.29",
     "httpx>=0.27",
     "playwright>=1.48",
     "beautifulsoup4==4.14.3",
@@ -23,6 +24,7 @@ dev = ["ruff>=0.6"]
 
 [project.scripts]
 vidcorpus = "vidcorpus.cli:main"
+vidcorpus-db = "vidcorpus.storage.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vidcorpus"]

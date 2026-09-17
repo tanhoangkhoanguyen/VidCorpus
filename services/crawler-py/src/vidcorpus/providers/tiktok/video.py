@@ -50,6 +50,10 @@ class TikTokVideoCrawler(BaseVideoCrawler):
         super().__init__(*args, **kwargs)
         self.video_download_url = None
 
+    def _reset(self, url: str) -> None:
+        super()._reset(url)
+        self.video_download_url = None
+
     async def crawl_metadata(self) -> None:
         response = await self.http.get(
             self.url,

@@ -8,6 +8,8 @@ from vidcorpus.core.browser import BrowserPool
 from vidcorpus.core.config import ConfigError
 from vidcorpus.core.log import get_logger
 from vidcorpus.providers import registry
+from vidcorpus.storage.database import connect, migrate
+from vidcorpus.storage.repository import Repository
 
 LOGGER = get_logger(__name__)
 
@@ -20,9 +22,7 @@ EXIT_INTERRUPTED = 130
 class CrawlerService:
     """One producer streams links onto a queue; N consumers drain it.
 
-    All of it runs on one event loop against one browser process - the workers
-    are tasks, not threads, and each holds a browser context rather than a
-    browser.
+    One event loop, one browser process: workers are tasks holding a context.
     """
 
     def __init__(
@@ -39,6 +39,7 @@ class CrawlerService:
 
         self.link_queue = asyncio.Queue()
         self.seen_links = set()
+        self.repository: Repository | None = None
 
     def _enqueue_unseen(self, link: str) -> str | None:
         """Single-threaded: the event loop gives us the check-then-add atomically."""
@@ -70,7 +71,7 @@ class CrawlerService:
     async def __consumer(self, pool: BrowserPool) -> None:
         try:
             crawler_class = registry.get_video_crawler(self.platform)
-            crawler = await crawler_class.create(pool)
+            crawler = await crawler_class.create(pool, self.repository)
             async with crawler:
                 while True:
                     link = await self.link_queue.get()
@@ -85,11 +86,22 @@ class CrawlerService:
             LOGGER.error(f"Consumer stopped: {type(e).__name__}: {e}")
 
     async def crawl(self, headless: bool = True) -> None:
-        async with BrowserPool(headless = headless) as pool:
-            await asyncio.gather(
-                self.__producer(pool),
-                *(self.__consumer(pool) for _ in range(self.workers)),
-            )
+        db = await connect(max_size = self.workers + 1)
+        try:
+            await migrate(db)
+            self.repository = Repository(db)
+            # Links finished on an earlier run are skipped without opening a page.
+            self.seen_links = await self.repository.known_urls(self.platform)
+            if self.seen_links:
+                LOGGER.info(f"Resuming: {len(self.seen_links)} URLs already crawled")
+
+            async with BrowserPool(headless = headless) as pool:
+                await asyncio.gather(
+                    self.__producer(pool),
+                    *(self.__consumer(pool) for _ in range(self.workers)),
+                )
+        finally:
+            await db.close()
         LOGGER.info(f"Done: {len(self.seen_links)} unique links seen")
 
 

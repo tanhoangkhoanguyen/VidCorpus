@@ -12,6 +12,14 @@ def data_dir() -> Path:
     return Path(os.environ.get("VIDCORPUS_DATA_DIR", "data")).expanduser()
 
 
+def database_url() -> str:
+    """Postgres DSN. Defaults to the docker-compose service."""
+    return os.environ.get(
+        "VIDCORPUS_DATABASE_URL",
+        "postgresql://vidcorpus:vidcorpus@localhost:5432/vidcorpus",
+    )
+
+
 def required_path(env_var: str) -> Path:
     """Resolve env_var to an existing file, failing with the variable name."""
     raw = os.environ.get(env_var)

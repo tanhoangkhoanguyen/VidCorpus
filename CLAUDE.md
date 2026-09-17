@@ -15,6 +15,8 @@ cd services\crawler-py
 python -m venv .venv; .venv\Scripts\activate
 pip install -e ".[dev]"
 playwright install chromium
+docker compose up -d postgres        # from the repo root
+vidcorpus-db migrate
 vidcorpus tiktok -k "du lịch đà nẵng" -w 4
 vidcorpus youtube -c SomeChannel --headed
 ruff check src
@@ -31,7 +33,7 @@ Everything is `async`. One Chromium process (`core/browser.py`'s `BrowserPool`) 
 Each provider is a **pair** under `providers/<platform>/`, resolved through `providers/registry.py` (keyed off each class's `name`) — nothing else imports providers directly:
 
 - `links.py` — `async for link in crawler.discover(keyword=...)`. An async generator: links stream rather than materialize.
-- `video.py` — `ingest(url)` does `resolve_url()` → `crawl_metadata()` → mkdir → `asyncio.gather(crawl_comments(), download_video())` → persist. `return_exceptions=True` plus an explicit check, so one failing step is logged without cancelling the other.
+- `video.py` — `ingest(url)` does `resolve_url()` → **claim the job** → `crawl_metadata()` → mkdir → `asyncio.gather(crawl_comments(), download_video())` → persist to Postgres. `return_exceptions=True` plus an explicit check, so one failing step is logged without cancelling the other. `_reset()` runs first: **one crawler serves many videos, so per-video state must be cleared** or comments accumulate across them.
 
 Build a crawler with `await Cls.create(pool)`; both bases are async context managers that close their context.
 
@@ -39,7 +41,22 @@ Build a crawler with `await Cls.create(pool)`; both bases are async context mana
 
 `validate_config()` runs on the main thread before any browser starts: it validates the YAML and each crawler's `required_selectors`, so a bad or incomplete file exits cleanly instead of dying mid-crawl. **Adding a `self.selectors.<...>("new_key")` call means adding that key to `required_selectors`.**
 
-`core/config.py` — `ConfigError`, `data_dir()`, `required_path()`. Everything env-driven fails with the variable name in the message.
+## Storage
+
+Postgres is the source of truth for metadata and text; blobs stay on disk under `data/<video_id>/`. Raw SQL throughout — no ORM.
+
+`storage/repository.py` — one transaction per video. Only the fields a provider actually publishes are stored; no raw provider payload. Two rules shape the rest:
+
+1. **Record provenance.** `parser_version`, `selectors_version`, `crawled_at` — so a later parser fix can re-derive only the rows that need it.
+2. **Append-only for anything that moves.** Recrawling upserts `videos` but *appends* to `video_stats_history`. Overwriting `views` destroys the only copy of what it was.
+
+`crawl_jobs` makes restarts cheap: `claim_job()` returns False for a URL already done, so a killed run resumes instead of recrawling. `CrawlerService` seeds `seen_links` from it at startup.
+
+`vidcorpus-db migrate|version`.
+
+Migrations are plain SQL in `migrations/NNN_*.sql`, each wrapping itself in `BEGIN/COMMIT` and recorded in `schema_version`. `docs/queries.md` has worked examples with real output and `EXPLAIN` plans.
+
+`core/config.py` — `ConfigError`, `data_dir()`, `database_url()`, `required_path()`. Everything env-driven fails with the variable name in the message.
 
 `schema.py` — one `VideoSchema` for all providers; `CommentSchema` → `SingleCommentSchema` for nested replies. Fields a platform does not publish are `None`, not `0` or `""` — TikTok has no `title`, `channel_id` or `subscribers`, and either platform can hide a count.
 

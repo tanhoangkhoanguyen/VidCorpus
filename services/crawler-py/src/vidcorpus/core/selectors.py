@@ -1,9 +1,7 @@
 """Selectors live in YAML, not in code.
 
-Providers change their markup constantly. Keeping selectors in a versioned file
-means a break is fixed by editing data, and each selector can list fallbacks so
-a rename degrades instead of failing outright. A fallback that actually fires is
-logged at WARNING - that is the earliest signal the provider has changed.
+Markup churn is fixed by editing data. Each entry may list fallbacks, and a
+fallback firing logs a WARNING - the earliest signal the provider changed.
 """
 
 from datetime import date
@@ -12,16 +10,17 @@ from pathlib import Path
 
 import yaml
 from bs4 import BeautifulSoup, Tag
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import Locator, Page
 from pydantic import BaseModel, Field, ValidationError, field_validator
-from selenium.common.exceptions import WebDriverException
-from selenium.webdriver.common.by import By
 
 from vidcorpus.core.config import ConfigError
 from vidcorpus.core.log import get_logger
 
 LOGGER = get_logger(__name__)
 
-_BY = {"css": By.CSS_SELECTOR, "xpath": By.XPATH, "tag": By.TAG_NAME}
+#: Playwright takes one selector string; xpath needs an explicit engine prefix.
+_PREFIX = {"css": "", "xpath": "xpath="}
 
 
 class Selector(BaseModel):
@@ -34,17 +33,17 @@ class Selector(BaseModel):
     @field_validator("how")
     @classmethod
     def known_strategy(cls, v: str) -> str:
-        if v not in _BY:
-            raise ValueError(f"how must be one of {sorted(_BY)}, got {v!r}")
+        if v not in _PREFIX:
+            raise ValueError(f"how must be one of {sorted(_PREFIX)}, got {v!r}")
         return v
 
     @property
     def candidates(self) -> list[str]:
         return [self.query, *self.fallbacks]
 
-    @property
-    def by(self) -> str:
-        return _BY[self.how]
+    def engine(self, query: str) -> str:
+        """The query as Playwright wants it."""
+        return _PREFIX[self.how] + query
 
 
 class SelectorSet(BaseModel):
@@ -70,24 +69,49 @@ class SelectorSet(BaseModel):
             f"({query!r}) - {self.platform} has likely changed its markup"
         )
 
-    def find_all(self, driver, key: str) -> list:
-        """driver.find_elements for the first candidate that matches anything."""
+    # --- live page (Playwright) ---
+
+    async def locate(self, root: Page | Locator, key: str) -> Locator | None:
+        """The first candidate that matches at least one element, else None."""
         selector = self[key]
         for index, query in enumerate(selector.candidates):
+            locator = root.locator(selector.engine(query))
             try:
-                found = driver.find_elements(selector.by, query)
-            except WebDriverException:
+                if await locator.count():
+                    if index:
+                        self._note_fallback(key, index, query)
+                    return locator
+            except PlaywrightError:
+                # A malformed query must not take down the crawl - try the next.
                 continue
-            if found:
-                if index:
-                    self._note_fallback(key, index, query)
-                return found
-        return []
+        return None
 
-    def find_one(self, driver, key: str):
-        """driver.find_element for the first candidate that matches, else None."""
-        found = self.find_all(driver, key)
-        return found[0] if found else None
+    async def all(self, root: Page | Locator, key: str) -> list[Locator]:
+        """Every element the first matching candidate finds."""
+        locator = await self.locate(root, key)
+        return await locator.all() if locator else []
+
+    async def wait_for(self, root: Page | Locator, key: str,
+                       timeout: float = 10_000) -> Locator | None:
+        """Wait for the first candidate to become visible, else None.
+
+        Replaces fixed sleeps: returns the moment the element appears. The
+        primary gets the full timeout, fallbacks a short probe each.
+        """
+        selector = self[key]
+        for index, query in enumerate(selector.candidates):
+            locator = root.locator(selector.engine(query)).first
+            try:
+                await locator.wait_for(state = "visible",
+                                       timeout = timeout if index == 0 else 1_000)
+            except PlaywrightError:
+                continue
+            if index:
+                self._note_fallback(key, index, query)
+            return locator
+        return None
+
+    # --- fetched HTML (BeautifulSoup) ---
 
     def select(self, soup: BeautifulSoup | Tag, key: str) -> list[Tag]:
         """BeautifulSoup .select for the first candidate that matches anything."""
@@ -104,9 +128,12 @@ class SelectorSet(BaseModel):
         found = self.select(soup, key)
         return found[0] if found else None
 
+    # --- misc ---
+
     def query(self, key: str) -> str:
-        """The primary query string, for callers that build their own lookup."""
-        return self[key].query
+        """The primary query as Playwright wants it, for callers that locate directly."""
+        selector = self[key]
+        return selector.engine(selector.query)
 
     def require(self, keys: set[str]) -> None:
         """Raise ConfigError if any key the crawler uses is absent.

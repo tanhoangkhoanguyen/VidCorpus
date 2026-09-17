@@ -1,23 +1,14 @@
-import time
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 
-from selenium.webdriver.common.keys import Keys
-
-from vidcorpus.core.browser import ChromeDriver
-from vidcorpus.core.crawler import BaseLinksCrawler
+from vidcorpus.core.crawler import BaseLinksCrawler, scroll_until_more
 from vidcorpus.core.log import get_logger
 
 LOGGER = get_logger(__name__)
-#: YouTube loads results lazily; give each END press this long to fetch more.
-FEED_SETTLE_SECONDS = 2
 
 
 class YouTubeLinksCrawler(BaseLinksCrawler):
     name = "youtube"
-    required_selectors = {"body", "video_link"}
-
-    def __init__(self):
-        super().__init__(ChromeDriver().get_driver())
+    required_selectors = {"video_link"}
 
     def search_url(self, keyword: str) -> str:
         return f"https://www.youtube.com/results?search_query={keyword.replace(' ', '+')}"
@@ -25,18 +16,14 @@ class YouTubeLinksCrawler(BaseLinksCrawler):
     def channel_url(self, channel: str) -> str:
         return f"https://www.youtube.com/@{channel}/videos"
 
-    def load_more_results(self, rounds: int) -> None:
-        time.sleep(FEED_SETTLE_SECONDS)
-        body = self.selectors.find_one(self.driver, "body")
-        if body is None:
-            LOGGER.warning("no page body to scroll")
-            return
-        for _ in range(rounds):
-            body.send_keys(Keys.END)
-            time.sleep(FEED_SETTLE_SECONDS)
+    async def load_more_results(self, rounds: int) -> None:
+        await scroll_until_more(
+            self.page, self.selectors, "video_link", rounds,
+            lambda: self.page.keyboard.press("End"),
+        )
 
-    def extract_video_links(self) -> Iterator[str]:
-        for video in self.selectors.find_all(self.driver, "video_link"):
-            href = video.get_attribute("href")
+    async def extract_video_links(self) -> AsyncIterator[str]:
+        for video in await self.selectors.all(self.page, "video_link"):
+            href = await video.get_attribute("href")
             if href and "watch" in href:
                 yield href

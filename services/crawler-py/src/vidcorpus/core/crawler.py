@@ -1,18 +1,51 @@
 """Shared crawler shape. Providers supply the platform-specific parts only."""
 
+import asyncio
 import json
 from abc import ABC, abstractmethod
-from collections.abc import Iterator
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import AsyncIterator
 
-import requests
+import httpx
+from playwright.async_api import BrowserContext, Page
 
+from vidcorpus.core.browser import BrowserPool
 from vidcorpus.core.config import data_dir
 from vidcorpus.core.log import get_logger
 from vidcorpus.core.selectors import load as load_selectors
 from vidcorpus.schema import VideoSchema
 
 LOGGER = get_logger(__name__)
+
+#: How long to wait for lazily-loaded content after a scroll, and how often to
+#: check. Bounded so a page that stops growing does not stall the crawl.
+SETTLE_TIMEOUT = 5.0
+SETTLE_POLL = 0.25
+
+
+async def scroll_until_more(page, selectors, key: str, rounds: int, trigger_load) -> None:
+    """Call `trigger_load` up to `rounds` times, waiting after each for more
+    elements matching `key` to appear.
+
+    Infinite feeds fire no load event, so the only signal a scroll worked is
+    the element count growing. Polling for that beats a fixed sleep: it
+    continues as soon as content arrives, and gives up after SETTLE_TIMEOUT
+    instead of stalling on a feed that has run out.
+    """
+    if await selectors.wait_for(page, key) is None:
+        LOGGER.warning(f"{selectors.platform}: nothing matched {key!r} on the page")
+        return
+
+    loop = asyncio.get_running_loop()
+    for _ in range(rounds):
+        before = len(await selectors.all(page, key))
+        await trigger_load()
+        deadline = loop.time() + SETTLE_TIMEOUT
+        while loop.time() < deadline:
+            await asyncio.sleep(SETTLE_POLL)
+            if len(await selectors.all(page, key)) > before:
+                break
+        else:
+            return  # nothing new arrived; another round would be wasted
 
 
 class BaseLinksCrawler(ABC):
@@ -22,15 +55,27 @@ class BaseLinksCrawler(ABC):
     #: Selector keys this crawler reads, checked against the YAML at startup.
     required_selectors: set[str] = set()
 
-    def __init__(self, driver):
-        self.driver = driver
+    def __init__(self, context: BrowserContext, page: Page):
+        self.context = context
+        self.page = page
         self.selectors = load_selectors(self.name)
+
+    @classmethod
+    async def create(cls, pool: BrowserPool) -> "BaseLinksCrawler":
+        """Build the crawler on its own browser context."""
+        context = await pool.new_context(cookies = cls.cookies())
+        return cls(context, await context.new_page())
+
+    @classmethod
+    def load_cookies(cls) -> list[dict] | None:
+        """Cookies to seed the context with. Providers that need auth override."""
+        return None
 
     @classmethod
     def validate_config(cls) -> None:
         """Raise ConfigError if this provider is not ready to run.
 
-        Called on the main thread before any crawler is built, so a missing
+        Called on the main thread before any browser is built, so a missing
         setting surfaces as a clean exit instead of dying inside a worker.
         Subclasses that need credentials extend this.
         """
@@ -45,39 +90,44 @@ class BaseLinksCrawler(ABC):
         """URL of the channel's video listing."""
 
     @abstractmethod
-    def extract_video_links(self) -> Iterator[str]:
+    async def extract_video_links(self) -> AsyncIterator[str]:
         """Yield video URLs from the page currently loaded."""
 
     @abstractmethod
-    def load_more_results(self, rounds: int) -> None:
-        """Trigger the page to load another batch. Platforms paginate differently."""
+    async def load_more_results(self, rounds: int) -> None:
+        """Load more results. Platforms paginate differently."""
 
-    def __links_from_page(self, url: str, scroll_rounds: int) -> Iterator[str]:
-        self.driver.get(url)
-        self.load_more_results(scroll_rounds)
-        yield from self.extract_video_links()
 
-    def links_for_keyword(self, keyword: str, scroll_rounds: int = 1) -> Iterator[str]:
-        yield from self.__links_from_page(self.search_url(keyword), scroll_rounds)
+    async def __links_from_page(self, url: str, scroll_rounds: int) -> AsyncIterator[str]:
+        await self.page.goto(url, wait_until = "domcontentloaded")
+        await self.load_more_results(scroll_rounds)
+        async for link in self.extract_video_links():
+            yield link
 
-    def links_for_channel(self, channel: str, scroll_rounds: int = 1) -> Iterator[str]:
-        yield from self.__links_from_page(self.channel_url(channel), scroll_rounds)
+    async def links_for_keyword(self, keyword: str, scroll_rounds: int = 1) -> AsyncIterator[str]:
+        async for link in self.__links_from_page(self.search_url(keyword), scroll_rounds):
+            yield link
 
-    def discover(self, keyword: str = None, channel: str = None) -> Iterator[str]:
-        """Yield every video URL reachable from the given keyword and/or channel."""
+    async def links_for_channel(self, channel: str, scroll_rounds: int = 1) -> AsyncIterator[str]:
+        async for link in self.__links_from_page(self.channel_url(channel), scroll_rounds):
+            yield link
+
+    async def discover(self, keyword: str = None, channel: str = None) -> AsyncIterator[str]:
         if keyword:
-            yield from self.links_for_keyword(keyword)
+            async for link in self.links_for_keyword(keyword):
+                yield link
         if channel:
-            yield from self.links_for_channel(channel)
+            async for link in self.links_for_channel(channel):
+                yield link
 
-    def close(self) -> None:
-        self.driver.quit()
+    async def close(self) -> None:
+        await self.context.close()
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *exc):
-        self.close()
+    async def __aexit__(self, *exc):
+        await self.close()
 
 
 class BaseVideoCrawler(ABC):
@@ -87,13 +137,22 @@ class BaseVideoCrawler(ABC):
     url_prefixes: tuple[str, ...]
     #: Selector keys this crawler reads, checked against the YAML at startup.
     required_selectors: set[str] = set()
+    #: Narrow viewport: TikTok's comment rail renders wider than it needs to.
+    viewport: dict | None = None
 
-    def __init__(self, driver):
-        self.driver = driver
+    def __init__(self, context: BrowserContext, page: Page, http: httpx.AsyncClient):
+        self.context = context
+        self.page = page
+        self.http = http
         self.selectors = load_selectors(self.name)
         self.url = None
         self.storage_path = None
         self.metadata = VideoSchema()
+
+    @classmethod
+    async def create(cls, pool: BrowserPool) -> "BaseVideoCrawler":
+        context = await pool.new_context(viewport = cls.viewport)
+        return cls(context, await context.new_page(), httpx.AsyncClient(follow_redirects = True))
 
     @classmethod
     def validate_config(cls) -> None:
@@ -101,24 +160,21 @@ class BaseVideoCrawler(ABC):
         load_selectors(cls.name).require(cls.required_selectors)
 
     @abstractmethod
-    def crawl_metadata(self) -> None:
+    async def crawl_metadata(self) -> None:
         """Populate self.metadata for self.url."""
 
     @abstractmethod
-    def crawl_comments(self) -> None:
+    async def crawl_comments(self) -> None:
         """Append comment threads to self.metadata.comments."""
 
     @abstractmethod
-    def download_video(self) -> None:
+    async def download_video(self) -> None:
         """Write the video blob into self.storage_path."""
 
-    def resolve_url(self) -> bool:
-        """Follow redirects and confirm the result belongs to this platform.
-
-        Rewrites self.url to the resolved address; returns False if it turned
-        out to belong to another platform.
-        """
-        final_url = requests.get(self.url, allow_redirects = True).url
+    async def resolve_url(self) -> bool:
+        """Follow redirects and confirm the result belongs to this platform."""
+        response = await self.http.get(self.url)
+        final_url = str(response.url)
         if not final_url.startswith(self.url_prefixes):
             LOGGER.warning(f"{self.url} resolves to {final_url}, not a {self.name} video")
             return False
@@ -134,35 +190,36 @@ class BaseVideoCrawler(ABC):
         except OSError as e:
             LOGGER.error(f"Unable to save metadata for video {self.metadata.id}: {e}")
 
-    def ingest(self, url: str) -> None:
-        """Fetch one video end to end: metadata, comments and blob, then save."""
+    async def ingest(self, url: str) -> None:
         self.url = url
-        if not self.resolve_url():
+        if not await self.resolve_url():
             return
 
-        self.crawl_metadata()
+        await self.crawl_metadata()
         self.storage_path = data_dir() / self.metadata.id
         self.storage_path.mkdir(parents = True, exist_ok = True)
 
-        with ThreadPoolExecutor(max_workers = 2) as executor:
-            futures = [
-                executor.submit(self.crawl_comments),
-                executor.submit(self.download_video),
-            ]
-        # submit() swallows exceptions; result() re-raises so a failed step is visible.
-        for future in futures:
-            try:
-                future.result()
-            except Exception as e:
-                LOGGER.error(f"Step failed for video {self.metadata.id}: {e}")
+        # return_exceptions: one failing step must not cancel the other.
+        results = await asyncio.gather(
+            self.crawl_comments(),
+            self.download_video(),
+            return_exceptions = True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                LOGGER.error(
+                    f"Step failed for video {self.metadata.id}: "
+                    f"{type(result).__name__}: {result}"
+                )
 
         self.write_metadata_file()
 
-    def close(self) -> None:
-        self.driver.quit()
+    async def close(self) -> None:
+        await self.context.close()
+        await self.http.aclose()
 
-    def __enter__(self):
+    async def __aenter__(self):
         return self
 
-    def __exit__(self, *exc):
-        self.close()
+    async def __aexit__(self, *exc):
+        await self.close()

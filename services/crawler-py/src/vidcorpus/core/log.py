@@ -1,6 +1,6 @@
 import logging
 
-# Keep third-party libraries (selenium, urllib3) from flooding the console.
+# Keep third-party libraries from flooding the console.
 logging.getLogger().setLevel(logging.WARNING)
 
 

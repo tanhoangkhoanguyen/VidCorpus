@@ -2,15 +2,11 @@
 #
 # YouTube's Polymer components (ytd-*) and their element ids have been stable for
 # years, so fallbacks here are thinner than TikTok's.
-version: 1
+version: 2
 last_verified: 2026-09-03
 
 selectors:
   # --- links crawler ---
-  body:
-    how: tag
-    query: 'body'
-
   video_link:
     how: xpath
     query: '//a[@id="video-title"]'

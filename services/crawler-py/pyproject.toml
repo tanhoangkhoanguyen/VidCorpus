@@ -20,7 +20,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ruff>=0.6"]
+dev = [
+    "ruff>=0.6",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.24",
+    "pytest-cov>=5.0",
+    "pytest-xdist>=3.6",
+    "testcontainers[postgres]>=4.8",
+]
 
 [project.scripts]
 vidcorpus = "vidcorpus.cli:main"
@@ -28,6 +35,16 @@ vidcorpus-db = "vidcorpus.storage.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/vidcorpus"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "integration: needs a real Postgres (testcontainers starts one)",
+]
+
+[tool.coverage.run]
+source = ["vidcorpus"]
 
 [tool.ruff]
 line-length = 100

@@ -40,15 +40,25 @@ class YouTubeVideoCrawler(BaseVideoCrawler):
     }
 
     async def crawl_metadata(self) -> None:
+        """Fetch, then hand the info dict to the pure parser."""
         # yt-dlp is synchronous and network-bound; keep it off the event loop.
         info = await asyncio.to_thread(self.__extract_info)
+        self.metadata = self.parse_metadata(info)
+
+    @staticmethod
+    def parse_metadata(info: dict) -> VideoSchema:
+        """yt-dlp info dict in, metadata out. No I/O.
+
+        Static and side-effect free, so a saved info dict tests it offline.
+        """
         # yt-dlp returns None for anything the video hides (like counts,
         # subscriber counts on some channels); the schema defaults cover those.
-        self.metadata = VideoSchema(**{
+        video = VideoSchema(**{
             field: info.get(source)
             for source, field in METADATA_FIELDS.items()
             if info.get(source) is not None
         })
+        return video
 
     def __extract_info(self) -> dict:
         with yt_dlp.YoutubeDL({"quiet": True, "skip_download": True}) as ydl:

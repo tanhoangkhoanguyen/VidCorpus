@@ -1,0 +1,61 @@
+name: crawler-py
+
+on:
+  push:
+    paths:
+      - "services/crawler-py/**"
+      - ".github/workflows/crawler-py.yml"
+  pull_request:
+    paths:
+      - "services/crawler-py/**"
+      - ".github/workflows/crawler-py.yml"
+
+defaults:
+  run:
+    working-directory: services/crawler-py
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install ruff
+      - run: ruff check src tests
+
+  unit:
+    # No network, no browser, no database - just the parsers and the
+    # selector layer, from saved fixtures.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Run unit tests
+        run: |
+          pytest tests -m "not integration" -n auto \
+            --cov=vidcorpus --cov-report=term-missing --cov-report=xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: services/crawler-py/coverage.xml
+
+  integration:
+    # testcontainers starts a real Postgres; the repository is exercised
+    # against it rather than a mock.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: Run integration tests
+        run: pytest tests -m integration

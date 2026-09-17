@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 VidCorpus ingests videos, metadata and comment threads from TikTok and YouTube into a structured corpus. Extraction drives a real browser (no official APIs), so provider code is coupled to platform DOM — selector churn is expected, not exceptional.
 
-Polyglot monorepo: `services/crawler-py/` is the Python crawler; more services come in later phases. Read the relevant `docs/adr/` entry before changing a technology choice.
+Polyglot monorepo: `services/crawler-py/` is the Python crawler; more come in later phases. README's Decisions table says why each technology was chosen — read it before swapping one.
 
 ## Commands
 
@@ -19,14 +19,16 @@ docker compose up -d postgres        # from the repo root
 vidcorpus-db migrate
 vidcorpus tiktok -k "du lịch đà nẵng" -w 4
 vidcorpus youtube -c SomeChannel --headed
-ruff check src
+pytest -m "not integration"          # offline, no Docker
+pytest                               # adds testcontainers Postgres
+ruff check src tests
 ```
 
 Python pinned `>=3.10,<3.13`. Subpackages are PEP 420 namespace packages — no `__init__.py` except the top-level version marker. Copy `.env.example` to `.env`; TikTok needs `TIKTOK_COOKIES_PATH`.
 
 ## Architecture
 
-Everything is `async`. One Chromium process (`core/browser.py`'s `BrowserPool`) backs every worker; each worker gets its own **context**, not its own browser — that is where the memory saving lives (~79 MB/worker vs ~534 MB under Selenium).
+Everything is `async`. One Chromium process (`core/browser.py`'s `BrowserPool`) backs every worker; each worker gets its own **context**, not its own browser — that is where the memory saving lives (~97 MB/worker vs ~531 MB under Selenium, at eight workers).
 
 `cli.py` — `CrawlerService` is one producer task feeding an `asyncio.Queue`, N consumer tasks draining it, shut down by one `None` sentinel per consumer. Dedupe needs no lock: check-then-add is atomic on a single event loop. The producer emits sentinels from `finally`, so a crash cannot hang the consumers.
 
@@ -54,13 +56,23 @@ Postgres is the source of truth for metadata and text; blobs stay on disk under 
 
 `vidcorpus-db migrate|version`.
 
-Migrations are plain SQL in `migrations/NNN_*.sql`, each wrapping itself in `BEGIN/COMMIT` and recorded in `schema_version`. `docs/queries.md` has worked examples with real output and `EXPLAIN` plans.
+Migrations are plain SQL in `migrations/NNN_*.sql`, each wrapping itself in `BEGIN/COMMIT` and recorded in `schema_version`.
 
 `core/config.py` — `ConfigError`, `data_dir()`, `database_url()`, `required_path()`. Everything env-driven fails with the variable name in the message.
 
-`schema.py` — one `VideoSchema` for all providers; `CommentSchema` → `SingleCommentSchema` for nested replies. Fields a platform does not publish are `None`, not `0` or `""` — TikTok has no `title`, `channel_id` or `subscribers`, and either platform can hide a count.
+`schema.py` — one `VideoSchema` for all providers. Fields a platform does not publish are `None`, not `0` or `""`: TikTok has no `title`, `channel_id` or `subscribers`, and either platform can hide a count.
 
 `core/log.py` — use `get_logger(__name__)`. Named `log.py` to avoid shadowing the stdlib `logging` it imports.
+
+## Tests
+
+`pytest -m "not integration"` runs offline because `parse_*` is pure and saved
+pages drive it. **Keep that split when adding a provider**: I/O in `crawl_*`,
+parsing in `parse_*`.
+
+`test_selectors.py` enforces the selector contract mechanically: no literal
+selectors in provider code, `required_selectors` in sync with the YAML and with
+the lookups the code makes. Storage tests use a real Postgres, never a mock.
 
 ## Waiting
 

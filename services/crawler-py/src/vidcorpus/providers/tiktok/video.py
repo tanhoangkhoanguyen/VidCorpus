@@ -9,7 +9,7 @@ from pydantic import ValidationError
 
 from vidcorpus.core.crawler import BaseVideoCrawler, scroll_until_more
 from vidcorpus.core.log import get_logger
-from vidcorpus.schema import CommentSchema, SingleCommentSchema
+from vidcorpus.schema import CommentSchema, SingleCommentSchema, VideoSchema
 
 LOGGER = get_logger(__name__)
 
@@ -55,44 +55,60 @@ class TikTokVideoCrawler(BaseVideoCrawler):
         self.video_download_url = None
 
     async def crawl_metadata(self) -> None:
+        """Fetch, then hand the HTML to the pure parser."""
         response = await self.http.get(
             self.url,
             headers = TIKTOK_HEADERS,
             cookies = TIKTOK_COOKIES,
         )
-        self.metadata.id = re.search(r'/video/(\d+)', self.url).group(1)
-        soup = BeautifulSoup(response.text, "html.parser")
+        self.metadata, self.video_download_url = self.parse_metadata(
+            response.text, self.url
+        )
+
+    def parse_metadata(self, html: str, url: str) -> tuple[VideoSchema, str]:
+        """HTML in, (metadata, download URL) out. No I/O.
+
+        Splitting this out is what makes the parser testable: a saved page runs
+        through it offline, with no browser and no network.
+        """
+        video = VideoSchema()
+        match = re.search(r'/video/(\d+)', url)
+        video.id = match.group(1) if match else ""
+
+        soup = BeautifulSoup(html, "html.parser")
         script_tag = self.selectors.select_one(soup, "rehydration_blob")
         if not script_tag:
             LOGGER.error(
-                f"video {self.metadata.id}: no rehydration blob in the page - "
+                f"video {video.id}: no rehydration blob in the page - "
                 "TikTok changed its markup, or this was a block page"
             )
-            return
+            return video, ""
 
         try:
             data = json.loads(script_tag.string)
-            item_struct = data['__DEFAULT_SCOPE__']['webapp.video-detail']['itemInfo']['itemStruct']
-            text_tags = item_struct.get('textExtra', [])
-            self.metadata.channel      = re.search(r'tiktok\.com/@([^/]+)/video', self.url).group(1)
-            self.metadata.description  = re.sub(r'#\w+', '', item_struct.get('desc', '')).strip()
+            item = data['__DEFAULT_SCOPE__']['webapp.video-detail']['itemInfo']['itemStruct']
+            text_tags = item.get('textExtra', [])
+            channel = re.search(r'tiktok\.com/@([^/]+)/video', url)
+            video.channel     = channel.group(1) if channel else ""
+            video.description = re.sub(r'#\w+', '', item.get('desc', '')).strip()
             # createTime is a Unix timestamp; the schema stores dates as strings.
-            self.metadata.date         = datetime.fromtimestamp(
-                int(item_struct['createTime']), tz = timezone.utc
+            video.date        = datetime.fromtimestamp(
+                int(item['createTime']), tz = timezone.utc
             ).isoformat()
             # Absent counts stay None; 0 would claim the video has no likes.
-            stats = item_struct.get('stats', {})
-            self.metadata.likes        = _optional_int(stats.get('diggCount'))
-            self.metadata.views        = _optional_int(stats.get('playCount'))
-            self.metadata.hashtag      = [
+            stats = item.get('stats', {})
+            video.likes       = _optional_int(stats.get('diggCount'))
+            video.views       = _optional_int(stats.get('playCount'))
+            video.hashtag     = [
                 '#' + tag['hashtagName'] for tag in text_tags if tag.get('hashtagName')
             ]
-            self.video_download_url = item_struct.get('video', {}).get('playAddr', '')
+            return video, item.get('video', {}).get('playAddr', '')
         except (json.JSONDecodeError, KeyError, AttributeError, TypeError, ValueError) as e:
             LOGGER.error(
-                f"video {self.metadata.id}: cannot read the rehydration blob "
+                f"video {video.id}: cannot read the rehydration blob "
                 f"({type(e).__name__}: {e})"
             )
+            return video, ""
 
     async def crawl_comments(self, scroll_rounds: int = 1, reply_expansions: int = 1) -> None:
         await self.page.goto(self.url, wait_until = "domcontentloaded")
@@ -114,7 +130,7 @@ class TikTokVideoCrawler(BaseVideoCrawler):
         await self.__expand_replies(reply_expansions)
 
         html = await self.page.content()
-        self.__parse_comments(BeautifulSoup(html, "html.parser"))
+        self.metadata.comments.extend(self.parse_comments(html))
 
     async def __expand_replies(self, rounds: int) -> None:
         for _ in range(rounds):
@@ -133,8 +149,10 @@ class TikTokVideoCrawler(BaseVideoCrawler):
                         f"video {self.metadata.id}: reply button skipped: {type(e).__name__}"
                     )
 
-    def __parse_comments(self, soup: BeautifulSoup) -> None:
-        """Pure parse over fetched HTML - no page access, so it is unit-testable."""
+    def parse_comments(self, html: str) -> list[CommentSchema]:
+        """HTML in, comment threads out. No page access, no I/O."""
+        soup = BeautifulSoup(html, "html.parser")
+        comments = []
         for wrapper in self.selectors.select(soup, "comment_wrapper"):
             try:
                 level1 = self.selectors.select_one(wrapper, "comment_item")
@@ -166,12 +184,13 @@ class TikTokVideoCrawler(BaseVideoCrawler):
                                 comment = body,
                             ))
 
-                self.metadata.comments.append(comment)
+                comments.append(comment)
             except (AttributeError, TypeError, ValidationError) as e:
                 LOGGER.warning(
                     f"video {self.metadata.id}: skipped a comment, "
                     f"selectors likely stale ({type(e).__name__}: {e})"
                 )
+        return comments
 
     async def download_video(self) -> None:
         if not self.video_download_url:

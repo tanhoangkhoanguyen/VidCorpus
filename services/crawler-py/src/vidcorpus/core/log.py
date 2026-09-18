@@ -1,5 +1,8 @@
 import logging
+
+# Keep third-party libraries from flooding the console.
 logging.getLogger().setLevel(logging.WARNING)
+
 
 def get_logger(name: str) -> logging.Logger:
     logger = logging.getLogger(name)

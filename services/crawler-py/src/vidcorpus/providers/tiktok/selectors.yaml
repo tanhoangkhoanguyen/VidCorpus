@@ -1,0 +1,71 @@
+# TikTok DOM selectors. Bump `version` and `last_verified` whenever these change.
+#
+# TikTok ships obfuscated class names with a stable semantic prefix
+# (DivCommentObjectWrapper -> css-1a2b3c-DivCommentObjectWrapper), so the
+# primary queries match on substring. `data-e2e` attributes are TikTok's own
+# test hooks - more stable than classes, but they do get renamed.
+version: 1
+last_verified: 2026-09-03
+
+selectors:
+  # --- links crawler ---
+  any_link:
+    how: xpath
+    query: '//a[@href]'
+
+  # --- video page ---
+  rehydration_blob:
+    query: 'script#__UNIVERSAL_DATA_FOR_REHYDRATION__'
+    fallbacks:
+      - 'script#SIGI_STATE'
+
+  comment_button:
+    query: "[data-e2e='comment-icon']"
+    fallbacks:
+      - "[data-e2e='comment-count']"
+      - "span[data-e2e*='comment']"
+
+  view_replies_button:
+    how: xpath
+    query: "//div[contains(@class,'DivViewRepliesContainer')]"
+    fallbacks:
+      - "//div[contains(@class,'ViewRepliesContainer')]"
+      - "//p[contains(@class,'PViewReplies')]"
+
+  # --- comment thread ---
+  comment_wrapper:
+    query: 'div[class*="DivCommentObjectWrapper"]'
+    fallbacks:
+      - 'div[class*="CommentObjectWrapper"]'
+
+  comment_item:
+    query: 'div[class*="DivCommentItemWrapper"]'
+    fallbacks:
+      - 'div[class*="CommentItemWrapper"]'
+
+  comment_author:
+    query: 'div[data-e2e="comment-username-1"] a p'
+    fallbacks:
+      - 'div[data-e2e="comment-username-1"] a'
+      - 'a[data-e2e="comment-username-1"]'
+
+  comment_text:
+    query: 'span[data-e2e="comment-level-1"]'
+    fallbacks:
+      - 'p[data-e2e="comment-level-1"]'
+
+  reply_container:
+    query: 'div[class*="DivReplyContainer"]'
+    fallbacks:
+      - 'div[class*="ReplyContainer"]'
+
+  reply_author:
+    query: 'div[data-e2e="comment-username-2"] a p'
+    fallbacks:
+      - 'div[data-e2e="comment-username-2"] a'
+      - 'a[data-e2e="comment-username-2"]'
+
+  reply_text:
+    query: 'span[data-e2e="comment-level-2"]'
+    fallbacks:
+      - 'p[data-e2e="comment-level-2"]'
